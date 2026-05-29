@@ -29,6 +29,7 @@ addTarget("InvisibleHusk", "game.ReplicatedStorage.SharedModules.Core.Index.Curs
 addTarget("Springer", "game.Workspace.Enemies.Springer", { r = 80, g = 255, b = 120 })
 addTarget("ICBM", "game.Workspace.Enemies.ICBM", { r = 255, g = 220, b = 80 })
 addTarget("Mart", "game.ReplicatedStorage.EnemyFolder.Enemies.Mart", { r = 255, g = 120, b = 220 })
+addTarget("Bell", "game.ReplicatedStorage.EnemyFolder.Enemies.Bell", { r = 180, g = 120, b = 255 })
 
 -- Add more paths by adding more addTarget lines:
 -- addTarget("MyPart", "game.Workspace.FolderName.PartName", { r = 80, g = 160, b = 255 })
@@ -40,6 +41,7 @@ local RESCAN_DELAY = 1
 local MAX_DISTANCE = 100
 local DRAWING_BOXES = {}
 local SELECTION_BOXES = {}
+local ACTIVE_TARGETS = {}
 local getChild
 
 local function logWarning(message)
@@ -138,8 +140,7 @@ local function distanceBetween(a, b)
 	return math.sqrt(dx * dx + dy * dy + dz * dz)
 end
 
-local function isPartInRange(part)
-	local playerPosition = getLocalPlayerPosition()
+local function isPartInRange(part, playerPosition)
 	local partPosition = getPosition(part)
 	local distance = distanceBetween(playerPosition, partPosition)
 
@@ -211,19 +212,24 @@ local function getParts(instance)
 	end
 
 	if isA(instance, "Model") and instance.GetDescendants ~= nil then
+		if instance.PrimaryPart ~= nil then
+			table.insert(parts, instance.PrimaryPart)
+			return parts
+		end
+
+		local root = getChild(instance, "HumanoidRootPart") or getChild(instance, "Head")
+		if root ~= nil and isA(root, "BasePart") then
+			table.insert(parts, root)
+			return parts
+		end
+
 		for _, descendant in ipairs(instance:GetDescendants()) do
 			if isA(descendant, "BasePart") then
 				table.insert(parts, descendant)
+				return parts
 			end
 		end
 		return parts
-	end
-
-	if instance.FindFirstAncestorWhichIsA ~= nil then
-		local part = instance:FindFirstAncestorWhichIsA("BasePart")
-		if part ~= nil then
-			table.insert(parts, part)
-		end
 	end
 
 	return parts
@@ -245,7 +251,7 @@ local function getBoxFolder()
 	return folder
 end
 
-local function createSelectionBoxes(target, targetIndex, parts)
+local function createSelectionBoxes(target, targetIndex, parts, activeTarget)
 	for partIndex, part in ipairs(parts) do
 		local box = Instance.new("SelectionBox")
 		box.Name = ("%s_%d_%d_Box"):format(target.name, targetIndex, partIndex)
@@ -256,11 +262,14 @@ local function createSelectionBoxes(target, targetIndex, parts)
 		box.Visible = false
 		box.Parent = getBoxFolder()
 
-		table.insert(SELECTION_BOXES, {
+		local trackedBox = {
 			part = part,
 			box = box,
 			adornee = part,
-		})
+		}
+
+		table.insert(SELECTION_BOXES, trackedBox)
+		table.insert(activeTarget.boxes, trackedBox)
 	end
 end
 
@@ -518,8 +527,8 @@ local function getPartCorners(part)
 	}
 end
 
-local function updateDrawingBox(square, part)
-	if not isPartInRange(part) then
+local function updateDrawingBox(square, part, playerPosition)
+	if not isPartInRange(part, playerPosition) then
 		square.Visible = false
 		return
 	end
@@ -564,9 +573,9 @@ local function updateDrawingBox(square, part)
 	square.Visible = true
 end
 
-local function updateSelectionBoxes()
+local function updateSelectionBoxes(playerPosition)
 	for _, trackedBox in ipairs(SELECTION_BOXES) do
-		local inRange = isPartInRange(trackedBox.part)
+		local inRange = isPartInRange(trackedBox.part, playerPosition)
 
 		trackedBox.box.Visible = inRange
 
@@ -578,12 +587,15 @@ local function updateSelectionBoxes()
 	end
 end
 
-local function addDrawingBoxes(target, parts)
+local function addDrawingBoxes(target, parts, activeTarget)
 	for _, part in ipairs(parts) do
-		table.insert(DRAWING_BOXES, {
+		local trackedBox = {
 			part = part,
 			square = makeDrawingBox(target),
-		})
+		}
+
+		table.insert(DRAWING_BOXES, trackedBox)
+		table.insert(activeTarget.boxes, trackedBox)
 	end
 end
 
@@ -601,8 +613,20 @@ local function removeDrawingSquare(square)
 	end
 end
 
-local function clearBoxes()
-	for _, trackedBox in ipairs(SELECTION_BOXES) do
+local function removeFromArray(array, value)
+	for index = #array, 1, -1 do
+		if array[index] == value then
+			table.remove(array, index)
+			return
+		end
+	end
+end
+
+local function clearActiveTarget(activeTarget)
+	for _, trackedBox in ipairs(activeTarget.boxes) do
+		removeFromArray(SELECTION_BOXES, trackedBox)
+		removeFromArray(DRAWING_BOXES, trackedBox)
+
 		if trackedBox.box ~= nil then
 			trackedBox.box.Visible = false
 			trackedBox.box.Adornee = nil
@@ -611,30 +635,68 @@ local function clearBoxes()
 				pcall(trackedBox.box.Destroy, trackedBox.box)
 			end
 		end
+
+		if trackedBox.square ~= nil then
+			removeDrawingSquare(trackedBox.square)
+		end
 	end
 
-	for _, box in ipairs(DRAWING_BOXES) do
-		removeDrawingSquare(box.square)
-	end
-
-	SELECTION_BOXES = {}
-	DRAWING_BOXES = {}
+	activeTarget.parts = {}
+	activeTarget.boxes = {}
 end
 
-local function rebuildBoxes(boxMode)
-	clearBoxes()
+local function sameParts(left, right)
+	if #left ~= #right then
+		return false
+	end
 
+	for index, part in ipairs(left) do
+		if right[index] ~= part then
+			return false
+		end
+	end
+
+	return true
+end
+
+local function copyArray(array)
+	local copy = {}
+
+	for index, value in ipairs(array) do
+		copy[index] = value
+	end
+
+	return copy
+end
+
+local function rescanTargets(boxMode)
 	for targetIndex, target in ipairs(TARGETS) do
+		local activeTarget = ACTIVE_TARGETS[targetIndex]
+
+		if activeTarget == nil then
+			activeTarget = {
+				parts = {},
+				boxes = {},
+			}
+			ACTIVE_TARGETS[targetIndex] = activeTarget
+		end
+
 		local instance = findPath(target.path)
+		local parts = {}
 
 		if instance ~= nil then
-			local parts = getParts(instance)
+			parts = getParts(instance)
+		end
+
+		if not sameParts(activeTarget.parts, parts) then
+			clearActiveTarget(activeTarget)
+			activeTarget.parts = copyArray(parts)
 
 			if #parts > 0 then
 				if boxMode == "selection" then
-					createSelectionBoxes(target, targetIndex, parts)
+					createSelectionBoxes(target, targetIndex, parts, activeTarget)
 				elseif boxMode == "drawing" then
-					addDrawingBoxes(target, parts)
+					addDrawingBoxes(target, parts, activeTarget)
 				end
 			end
 		end
@@ -677,14 +739,15 @@ local function startBoxLoop(boxMode)
 			local currentTime = getTime()
 
 			if currentTime >= nextRescan then
-				rebuildBoxes(boxMode)
+				rescanTargets(boxMode)
 				nextRescan = currentTime + RESCAN_DELAY
 			end
 
-			updateSelectionBoxes()
+			local playerPosition = getLocalPlayerPosition()
+			updateSelectionBoxes(playerPosition)
 
 			for _, box in ipairs(DRAWING_BOXES) do
-				updateDrawingBox(box.square, box.part)
+				updateDrawingBox(box.square, box.part, playerPosition)
 			end
 
 			waitForNextUpdate()
