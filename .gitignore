@@ -1,3 +1,62 @@
+-- Roblox LuaU path highlighter
+-- Put this in a LocalScript if you only want yourself to see it.
+-- Put this in a Script if you want the server to create the highlights for everyone.
+
+local TARGETS = {
+	{
+		name = "Tripmine",
+		path = { "Workspace", "Lobby", "oh the trips we mine", "Tripmine" },
+		fillColor = Color3.fromRGB(255, 80, 80),
+		outlineColor = Color3.fromRGB(255, 255, 255),
+	},
+
+	-- Add more paths here.
+	-- Example:
+	-- {
+	-- 	name = "MyPart",
+	-- 	path = { "Workspace", "FolderName", "PartName" },
+	-- 	fillColor = Color3.fromRGB(80, 160, 255),
+	-- 	outlineColor = Color3.fromRGB(255, 255, 255),
+	-- },
+}
+
+local HIGHLIGHT_FOLDER_NAME = "_NullPathHighlights"
+
+local function getHighlightFolder()
+	local folder = game:FindFirstChild(HIGHLIGHT_FOLDER_NAME)
+
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = HIGHLIGHT_FOLDER_NAME
+		folder.Parent = game
+	end
+
+	return folder
+end
+
+local function buildPathText(pathParts, lastIndex)
+	local text = "game"
+
+	for index = 1, lastIndex or #pathParts do
+		local part = pathParts[index]
+
+		if part:match("^[%a_][%w_]*$") then
+			text ..= "." .. part
+		else
+			text ..= "[\"" .. part .. "\"]"
+		end
+	end
+
+	return text
+end
+
+local function findPath(pathParts)
+	local current = game
+
+	for index, childName in ipairs(pathParts) do
+		local child = current:FindFirstChild(childName)
+
+		if not child then
 			return nil, {
 				missingName = childName,
 				missingAt = buildPathText(pathParts, index - 1),
