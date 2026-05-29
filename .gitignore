@@ -1,37 +1,165 @@
--- Roblox LuaU path highlighter
--- Put this in a LocalScript if you only want yourself to see it.
--- Put this in a Script if you want the server to create the highlights for everyone.
+local TARGETS = {}
 
-local TARGETS = {
-	{
-		name = "Tripmine",
-		path = { "Workspace", "Lobby", "oh the trips we mine", "Tripmine" },
-		fillColor = Color3.fromRGB(255, 80, 80),
-		outlineColor = Color3.fromRGB(255, 255, 255),
-	},
+local function pathFromString(pathText)
+	local parts = {}
 
-	-- Add more paths here.
-	-- Example:
-	-- {
-	-- 	name = "MyPart",
-	-- 	path = { "Workspace", "FolderName", "PartName" },
-	-- 	fillColor = Color3.fromRGB(80, 160, 255),
-	-- 	outlineColor = Color3.fromRGB(255, 255, 255),
-	-- },
-}
-
-local HIGHLIGHT_FOLDER_NAME = "_NullPathHighlights"
-
-local function getHighlightFolder()
-	local folder = game:FindFirstChild(HIGHLIGHT_FOLDER_NAME)
-
-	if not folder then
-		folder = Instance.new("Folder")
-		folder.Name = HIGHLIGHT_FOLDER_NAME
-		folder.Parent = game
+	for part in pathText:gmatch("[^%.]+") do
+		if part ~= "game" then
+			table.insert(parts, part)
+		end
 	end
 
-	return folder
+	return parts
+end
+
+local function addTarget(name, path, boxColor)
+	if type(path) == "string" then
+		path = pathFromString(path)
+	end
+
+	table.insert(TARGETS, {
+		name = name,
+		path = path,
+		boxColor = boxColor or { r = 255, g = 80, b = 80 },
+	})
+end
+
+addTarget("Tripmine", "game.Workspace.Item_Pools.Tripmine", { r = 255, g = 80, b = 80 })
+addTarget("InvisibleHusk", "game.ReplicatedStorage.SharedModules.Core.Index.CurseIndex.InvisibleHusk", { r = 80, g = 160, b = 255 })
+addTarget("Springer", "game.Workspace.Enemies.Springer", { r = 80, g = 255, b = 120 })
+addTarget("ICBM", "game.Workspace.Enemies.ICBM", { r = 255, g = 220, b = 80 })
+addTarget("Mart", "game.ReplicatedStorage.EnemyFolder.Enemies.Mart", { r = 255, g = 120, b = 220 })
+
+-- Add more paths by adding more addTarget lines:
+-- addTarget("MyPart", "game.Workspace.FolderName.PartName", { r = 80, g = 160, b = 255 })
+-- addTarget("AnotherPart", "game.Workspace.OtherFolder.OtherPart", { r = 80, g = 255, b = 120 })
+
+local BOX_FOLDER_NAME = "_NullPathBoxes"
+local UPDATE_DELAY = 0.03
+local RESCAN_DELAY = 1
+local MAX_DISTANCE = 100
+local DRAWING_BOXES = {}
+local SELECTION_BOXES = {}
+local getChild
+
+local function logWarning(message)
+	if warn ~= nil then
+		warn(message)
+	else
+		print("WARNING: " .. message)
+	end
+end
+
+local function makeColor(color)
+	if Color3 ~= nil then
+		return Color3.fromRGB(color.r, color.g, color.b)
+	end
+
+	return color
+end
+
+local function getPosition(object)
+	if object == nil then
+		return nil
+	end
+
+	local position = object.Position or object.position
+	if position ~= nil then
+		return position
+	end
+
+	local cframe = object.CFrame or object.cframe
+	if cframe ~= nil then
+		return cframe.Position or cframe.position
+	end
+
+	if object.GetPivot ~= nil then
+		local success, pivot = pcall(object.GetPivot, object)
+		if success and pivot ~= nil then
+			return pivot.Position or pivot.position
+		end
+	end
+
+	return nil
+end
+
+local function getLocalPlayerPosition()
+	local players = game ~= nil and (game.Players or getChild(game, "Players")) or nil
+	local localPlayer = players ~= nil and players.LocalPlayer or nil
+	local character = localPlayer ~= nil and localPlayer.Character or nil
+
+	if character ~= nil then
+		local root = getChild(character, "HumanoidRootPart") or getChild(character, "Torso") or getChild(character, "UpperTorso")
+		local rootPosition = getPosition(root)
+
+		if rootPosition ~= nil then
+			return rootPosition
+		end
+	end
+
+	local camera = workspace ~= nil and workspace.CurrentCamera or nil
+	local cameraCFrame = camera ~= nil and (camera.CFrame or camera.cframe) or nil
+
+	if cameraCFrame ~= nil then
+		return cameraCFrame.Position or cameraCFrame.position
+	end
+
+	return nil
+end
+
+local function distanceBetween(a, b)
+	if a == nil or b == nil then
+		return nil
+	end
+
+	local success, distance = pcall(function()
+		return (a - b).Magnitude
+	end)
+
+	if success and distance ~= nil then
+		return distance
+	end
+
+	local ax = a.X or a.x
+	local ay = a.Y or a.y
+	local az = a.Z or a.z
+	local bx = b.X or b.x
+	local by = b.Y or b.y
+	local bz = b.Z or b.z
+
+	if ax == nil or ay == nil or az == nil or bx == nil or by == nil or bz == nil then
+		return nil
+	end
+
+	local dx = ax - bx
+	local dy = ay - by
+	local dz = az - bz
+
+	return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+local function isPartInRange(part)
+	local playerPosition = getLocalPlayerPosition()
+	local partPosition = getPosition(part)
+	local distance = distanceBetween(playerPosition, partPosition)
+
+	return distance ~= nil and distance <= MAX_DISTANCE
+end
+
+function getChild(parent, childName)
+	if parent == nil then
+		return nil
+	end
+
+	if type(parent) == "table" then
+		return parent[childName]
+	end
+
+	if parent.FindFirstChild ~= nil then
+		return parent:FindFirstChild(childName)
+	end
+
+	return parent[childName]
 end
 
 local function buildPathText(pathParts, lastIndex)
@@ -54,9 +182,9 @@ local function findPath(pathParts)
 	local current = game
 
 	for index, childName in ipairs(pathParts) do
-		local child = current:FindFirstChild(childName)
+		local child = getChild(current, childName)
 
-		if not child then
+		if child == nil then
 			return nil, {
 				missingName = childName,
 				missingAt = buildPathText(pathParts, index - 1),
@@ -70,58 +198,520 @@ local function findPath(pathParts)
 	return current, nil
 end
 
-local function getVisibleAdornee(instance)
-	if instance:IsA("BasePart") or instance:IsA("Model") then
-		return instance
+local function isA(instance, className)
+	return instance ~= nil and instance.IsA ~= nil and instance:IsA(className)
+end
+
+local function getParts(instance)
+	local parts = {}
+
+	if isA(instance, "BasePart") then
+		table.insert(parts, instance)
+		return parts
 	end
 
-	local model = instance:FindFirstAncestorWhichIsA("Model")
-	if model then
-		return model
+	if isA(instance, "Model") and instance.GetDescendants ~= nil then
+		for _, descendant in ipairs(instance:GetDescendants()) do
+			if isA(descendant, "BasePart") then
+				table.insert(parts, descendant)
+			end
+		end
+		return parts
 	end
 
-	local part = instance:FindFirstAncestorWhichIsA("BasePart")
-	if part then
-		return part
+	if instance.FindFirstAncestorWhichIsA ~= nil then
+		local part = instance:FindFirstAncestorWhichIsA("BasePart")
+		if part ~= nil then
+			table.insert(parts, part)
+		end
+	end
+
+	return parts
+end
+
+local function canUseSelectionBox()
+	return game ~= nil and Instance ~= nil and Instance.new ~= nil
+end
+
+local function getBoxFolder()
+	local folder = game:FindFirstChild(BOX_FOLDER_NAME)
+
+	if folder == nil then
+		folder = Instance.new("Folder")
+		folder.Name = BOX_FOLDER_NAME
+		folder.Parent = game
+	end
+
+	return folder
+end
+
+local function createSelectionBoxes(target, targetIndex, parts)
+	for partIndex, part in ipairs(parts) do
+		local box = Instance.new("SelectionBox")
+		box.Name = ("%s_%d_%d_Box"):format(target.name, targetIndex, partIndex)
+		box.Adornee = part
+		box.Color3 = makeColor(target.boxColor)
+		box.LineThickness = 0.08
+		box.SurfaceTransparency = 0.65
+		box.Visible = false
+		box.Parent = getBoxFolder()
+
+		table.insert(SELECTION_BOXES, {
+			part = part,
+			box = box,
+			adornee = part,
+		})
+	end
+end
+
+local function canUseDrawing()
+	return Drawing ~= nil and Drawing.new ~= nil
+end
+
+local function makeDrawingBox(target)
+	local square = Drawing.new("Square")
+	square.Visible = false
+	square.Color = makeColor(target.boxColor)
+	square.Thickness = 2
+	square.Filled = false
+	square.Transparency = 1
+	return square
+end
+
+local warnedMissingProjection = false
+
+local function readScreenResult(resultA, resultB, resultC)
+	if resultA == nil then
+		return nil
+	end
+
+	if type(resultA) == "number" and type(resultB) == "number" then
+		return resultA, resultB, resultC ~= false
+	end
+
+	if type(resultA) == "table" or typeof ~= nil and typeof(resultA) == "Vector2" or typeof ~= nil and typeof(resultA) == "Vector3" then
+		local x = resultA.X or resultA.x or resultA[1]
+		local y = resultA.Y or resultA.y or resultA[2]
+
+		if x ~= nil and y ~= nil then
+			return x, y, resultB ~= false
+		end
 	end
 
 	return nil
 end
 
-local function createHighlight(targetConfig, instance)
-	local adornee = getVisibleAdornee(instance)
+local function tryProjectWith(fn, self, point)
+	local success, a, b, c
 
-	if not adornee then
-		warn(("[Null Highlighter] Found %s, but it has no visible part/model to highlight."):format(targetConfig.name))
+	if self ~= nil then
+		success, a, b, c = pcall(fn, self, point)
+	else
+		success, a, b, c = pcall(fn, point)
+	end
+
+	if not success then
+		return nil
+	end
+
+	return readScreenResult(a, b, c)
+end
+
+local function getNumber(value, fallback)
+	if value == nil then
+		return fallback
+	end
+
+	if type(value) == "number" then
+		return value
+	end
+
+	return fallback
+end
+
+local function getVectorXY(value)
+	if value == nil then
+		return nil, nil
+	end
+
+	return value.X or value.x or value[1], value.Y or value.y or value[2]
+end
+
+local function getCameraViewport(camera)
+	local viewport = camera.ViewportSize or camera.viewportSize or camera.Viewport
+	local width, height = getVectorXY(viewport)
+
+	if width ~= nil and height ~= nil then
+		return width, height
+	end
+
+	if getviewport ~= nil then
+		local success, x, y = pcall(getviewport)
+		if success and x ~= nil and y ~= nil then
+			return x, y
+		end
+	end
+
+	if get_viewport ~= nil then
+		local success, x, y = pcall(get_viewport)
+		if success and x ~= nil and y ~= nil then
+			return x, y
+		end
+	end
+
+	return nil, nil
+end
+
+local function pointToCameraSpace(camera, point)
+	local cframe = camera.CFrame or camera.cframe
+
+	if cframe == nil then
+		return nil
+	end
+
+	if cframe.PointToObjectSpace ~= nil then
+		local success, result = pcall(cframe.PointToObjectSpace, cframe, point)
+		if success then
+			return result
+		end
+	end
+
+	if cframe.pointToObjectSpace ~= nil then
+		local success, result = pcall(cframe.pointToObjectSpace, cframe, point)
+		if success then
+			return result
+		end
+	end
+
+	if cframe.Inverse ~= nil then
+		local success, inverse = pcall(cframe.Inverse, cframe)
+		if success then
+			local multiplySuccess, result = pcall(function()
+				return inverse * point
+			end)
+
+			if multiplySuccess then
+				return result
+			end
+		end
+	end
+
+	return nil
+end
+
+local function manualProjectWorldPoint(point)
+	local camera = workspace ~= nil and workspace.CurrentCamera or nil
+
+	if camera == nil then
+		return nil
+	end
+
+	local cameraPoint = pointToCameraSpace(camera, point)
+	if cameraPoint == nil then
+		return nil
+	end
+
+	local x = cameraPoint.X or cameraPoint.x
+	local y = cameraPoint.Y or cameraPoint.y
+	local z = cameraPoint.Z or cameraPoint.z
+
+	if x == nil or y == nil or z == nil or z >= -0.01 then
+		return nil
+	end
+
+	local width, height = getCameraViewport(camera)
+	if width == nil or height == nil then
+		return nil
+	end
+
+	local fieldOfView = getNumber(camera.FieldOfView or camera.fieldOfView or camera.FOV or camera.fov, 70)
+	local focalLength = height / (2 * math.tan(math.rad(fieldOfView) / 2))
+	local depth = -z
+	local screenX = (width / 2) + (x * focalLength / depth)
+	local screenY = (height / 2) - (y * focalLength / depth)
+
+	return screenX, screenY, true
+end
+
+local function projectWorldPoint(point)
+	local camera = workspace ~= nil and workspace.CurrentCamera or nil
+
+	if camera ~= nil then
+		local cameraMethods = {
+			"WorldToViewportPoint",
+			"WorldToScreenPoint",
+			"WorldToScreen",
+			"worldToScreen",
+			"world_to_screen",
+		}
+
+		for _, methodName in ipairs(cameraMethods) do
+			local method = camera[methodName]
+			if method ~= nil then
+				local x, y, visible = tryProjectWith(method, camera, point)
+				if x ~= nil then
+					return x, y, visible
+				end
+			end
+		end
+	end
+
+	local globalFunctions = {}
+
+	if WorldToScreen ~= nil then
+		table.insert(globalFunctions, WorldToScreen)
+	end
+
+	if worldToScreen ~= nil then
+		table.insert(globalFunctions, worldToScreen)
+	end
+
+	if world_to_screen ~= nil then
+		table.insert(globalFunctions, world_to_screen)
+	end
+
+	for _, fn in ipairs(globalFunctions) do
+		if fn ~= nil then
+			local x, y, visible = tryProjectWith(fn, nil, point)
+			if x ~= nil then
+				return x, y, visible
+			end
+		end
+	end
+
+	if renderer ~= nil and renderer.world_to_screen ~= nil then
+		local x, y, visible = tryProjectWith(renderer.world_to_screen, nil, point)
+		if x ~= nil then
+			return x, y, visible
+		end
+	end
+
+	if Render ~= nil and Render.WorldToScreen ~= nil then
+		local x, y, visible = tryProjectWith(Render.WorldToScreen, nil, point)
+		if x ~= nil then
+			return x, y, visible
+		end
+	end
+
+	return manualProjectWorldPoint(point)
+end
+
+local function getPartCorners(part)
+	local cf = part.CFrame
+	local size = part.Size
+
+	if cf == nil or size == nil or Vector3 == nil then
+		return nil
+	end
+
+	local half = size / 2
+
+	return {
+		cf * Vector3.new(-half.X, -half.Y, -half.Z),
+		cf * Vector3.new(-half.X, -half.Y, half.Z),
+		cf * Vector3.new(-half.X, half.Y, -half.Z),
+		cf * Vector3.new(-half.X, half.Y, half.Z),
+		cf * Vector3.new(half.X, -half.Y, -half.Z),
+		cf * Vector3.new(half.X, -half.Y, half.Z),
+		cf * Vector3.new(half.X, half.Y, -half.Z),
+		cf * Vector3.new(half.X, half.Y, half.Z),
+	}
+end
+
+local function updateDrawingBox(square, part)
+	if not isPartInRange(part) then
+		square.Visible = false
 		return
 	end
 
-	local highlight = Instance.new("Highlight")
-	highlight.Name = targetConfig.name .. "_Highlight"
-	highlight.Adornee = adornee
-	highlight.FillColor = targetConfig.fillColor
-	highlight.FillTransparency = 0.45
-	highlight.OutlineColor = targetConfig.outlineColor
-	highlight.OutlineTransparency = 0
-	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	highlight.Parent = getHighlightFolder()
+	local corners = getPartCorners(part)
 
-	print(("[Null Highlighter] Highlighting %s at %s"):format(targetConfig.name, instance:GetFullName()))
+	if corners == nil then
+		square.Visible = false
+		return
+	end
+
+	local minX = math.huge
+	local minY = math.huge
+	local maxX = -math.huge
+	local maxY = -math.huge
+	local anyVisible = false
+
+	for _, corner in ipairs(corners) do
+		local x, y, visible = projectWorldPoint(corner)
+
+		if x ~= nil and visible ~= false then
+			anyVisible = true
+			minX = math.min(minX, x)
+			minY = math.min(minY, y)
+			maxX = math.max(maxX, x)
+			maxY = math.max(maxY, y)
+		end
+	end
+
+	if not anyVisible then
+		if not warnedMissingProjection then
+			logWarning("[Null Highlighter] Drawing works, but no world-to-screen function was found. Matcha needs a function like WorldToScreen, world_to_screen, or camera:WorldToScreenPoint.")
+			warnedMissingProjection = true
+		end
+
+		square.Visible = false
+		return
+	end
+
+	square.Position = Vector2.new(minX, minY)
+	square.Size = Vector2.new(maxX - minX, maxY - minY)
+	square.Visible = true
 end
 
-for _, targetConfig in ipairs(TARGETS) do
-	local instance, pathError = findPath(targetConfig.path)
+local function updateSelectionBoxes()
+	for _, trackedBox in ipairs(SELECTION_BOXES) do
+		local inRange = isPartInRange(trackedBox.part)
 
-	if instance then
-		createHighlight(targetConfig, instance)
-	else
-		warn(
-			("[Null Highlighter] Could not find %s. Missing %q under %s. Full target: %s"):format(
-				targetConfig.name,
-				pathError.missingName,
-				pathError.missingAt,
-				pathError.fullPath
-			)
-		)
+		trackedBox.box.Visible = inRange
+
+		if inRange then
+			trackedBox.box.Adornee = trackedBox.adornee
+		else
+			trackedBox.box.Adornee = nil
+		end
 	end
+end
+
+local function addDrawingBoxes(target, parts)
+	for _, part in ipairs(parts) do
+		table.insert(DRAWING_BOXES, {
+			part = part,
+			square = makeDrawingBox(target),
+		})
+	end
+end
+
+local function removeDrawingSquare(square)
+	if square == nil then
+		return
+	end
+
+	square.Visible = false
+
+	if square.Remove ~= nil then
+		pcall(square.Remove, square)
+	elseif square.Destroy ~= nil then
+		pcall(square.Destroy, square)
+	end
+end
+
+local function clearBoxes()
+	for _, trackedBox in ipairs(SELECTION_BOXES) do
+		if trackedBox.box ~= nil then
+			trackedBox.box.Visible = false
+			trackedBox.box.Adornee = nil
+
+			if trackedBox.box.Destroy ~= nil then
+				pcall(trackedBox.box.Destroy, trackedBox.box)
+			end
+		end
+	end
+
+	for _, box in ipairs(DRAWING_BOXES) do
+		removeDrawingSquare(box.square)
+	end
+
+	SELECTION_BOXES = {}
+	DRAWING_BOXES = {}
+end
+
+local function rebuildBoxes(boxMode)
+	clearBoxes()
+
+	for targetIndex, target in ipairs(TARGETS) do
+		local instance = findPath(target.path)
+
+		if instance ~= nil then
+			local parts = getParts(instance)
+
+			if #parts > 0 then
+				if boxMode == "selection" then
+					createSelectionBoxes(target, targetIndex, parts)
+				elseif boxMode == "drawing" then
+					addDrawingBoxes(target, parts)
+				end
+			end
+		end
+	end
+end
+
+local function waitForNextUpdate()
+	if task ~= nil and task.wait ~= nil then
+		task.wait(UPDATE_DELAY)
+	else
+		wait(UPDATE_DELAY)
+	end
+end
+
+local function getTime()
+	if tick ~= nil then
+		return tick()
+	end
+
+	if time ~= nil then
+		return time()
+	end
+
+	if os ~= nil and os.time ~= nil then
+		return os.time()
+	end
+
+	if os ~= nil and os.clock ~= nil then
+		return os.clock()
+	end
+
+	return 0
+end
+
+local function startBoxLoop(boxMode)
+	local function updateLoop()
+		local nextRescan = 0
+
+		while true do
+			local currentTime = getTime()
+
+			if currentTime >= nextRescan then
+				rebuildBoxes(boxMode)
+				nextRescan = currentTime + RESCAN_DELAY
+			end
+
+			updateSelectionBoxes()
+
+			for _, box in ipairs(DRAWING_BOXES) do
+				updateDrawingBox(box.square, box.part)
+			end
+
+			waitForNextUpdate()
+		end
+	end
+
+	if task ~= nil and task.spawn ~= nil then
+		task.spawn(updateLoop)
+	else
+		coroutine.wrap(updateLoop)()
+	end
+end
+
+local boxMode = nil
+
+print(("[Null Highlighter] Loaded %d target(s)."):format(#TARGETS))
+
+if canUseSelectionBox() then
+	boxMode = "selection"
+	print("[Null Highlighter] Using SelectionBox mode.")
+elseif canUseDrawing() then
+	boxMode = "drawing"
+	print("[Null Highlighter] Using Drawing box mode.")
+else
+	logWarning("[Null Highlighter] Cannot draw boxes. This LuaVM needs either Instance.new or Drawing.new.")
+end
+
+if boxMode ~= nil then
+	startBoxLoop(boxMode)
 end
