@@ -12,7 +12,7 @@ local function pathFromString(pathText)
 	return parts
 end
 
-local function addTarget(name, path, boxColor)
+local function addTarget(name, path, boxColor, includeChildren)
 	if type(path) == "string" then
 		path = pathFromString(path)
 	end
@@ -21,15 +21,13 @@ local function addTarget(name, path, boxColor)
 		name = name,
 		path = path,
 		boxColor = boxColor or { r = 255, g = 80, b = 80 },
+		includeChildren = includeChildren == true,
 	})
 end
 
 addTarget("Tripmine", "game.Workspace.Item_Pools.Tripmine", { r = 255, g = 80, b = 80 })
 addTarget("InvisibleHusk", "game.ReplicatedStorage.SharedModules.Core.Index.CurseIndex.InvisibleHusk", { r = 80, g = 160, b = 255 })
-addTarget("Springer", "game.Workspace.Enemies.Springer", { r = 80, g = 255, b = 120 })
-addTarget("ICBM", "game.Workspace.Enemies.ICBM", { r = 255, g = 220, b = 80 })
-addTarget("Mart", "game.ReplicatedStorage.EnemyFolder.Enemies.Mart", { r = 255, g = 120, b = 220 })
-addTarget("Bell", "game.ReplicatedStorage.EnemyFolder.Enemies.Bell", { r = 180, g = 120, b = 255 })
+addTarget("EnemyFolder", "game.ReplicatedStorage.EnemyFolder.Enemies", { r = 80, g = 255, b = 120 }, true)
 
 -- Add more paths by adding more addTarget lines:
 -- addTarget("MyPart", "game.Workspace.FolderName.PartName", { r = 80, g = 160, b = 255 })
@@ -39,10 +37,12 @@ local BOX_FOLDER_NAME = "_NullPathBoxes"
 local UPDATE_DELAY = 0.03
 local RESCAN_DELAY = 1
 local MAX_DISTANCE = 100
+local MAX_DISTANCE_SQUARED = MAX_DISTANCE * MAX_DISTANCE
 local DRAWING_BOXES = {}
 local SELECTION_BOXES = {}
 local ACTIVE_TARGETS = {}
 local getChild
+local warnedMissingDistance = false
 
 local function logWarning(message)
 	if warn ~= nil then
@@ -87,6 +87,14 @@ end
 
 local function getLocalPlayerPosition()
 	local players = game ~= nil and (game.Players or getChild(game, "Players")) or nil
+
+	if players == nil and game ~= nil and game.GetService ~= nil then
+		local success, result = pcall(game.GetService, game, "Players")
+		if success then
+			players = result
+		end
+	end
+
 	local localPlayer = players ~= nil and players.LocalPlayer or nil
 	local character = localPlayer ~= nil and localPlayer.Character or nil
 
@@ -140,11 +148,52 @@ local function distanceBetween(a, b)
 	return math.sqrt(dx * dx + dy * dy + dz * dz)
 end
 
+local function isWithinDistance(a, b)
+	if a == nil or b == nil then
+		return nil
+	end
+
+	local success, distanceSquared = pcall(function()
+		local offset = a - b
+		return offset.X * offset.X + offset.Y * offset.Y + offset.Z * offset.Z
+	end)
+
+	if success and distanceSquared ~= nil then
+		return distanceSquared <= MAX_DISTANCE_SQUARED
+	end
+
+	local ax = a.X or a.x
+	local ay = a.Y or a.y
+	local az = a.Z or a.z
+	local bx = b.X or b.x
+	local by = b.Y or b.y
+	local bz = b.Z or b.z
+
+	if ax == nil or ay == nil or az == nil or bx == nil or by == nil or bz == nil then
+		return nil
+	end
+
+	local dx = ax - bx
+	local dy = ay - by
+	local dz = az - bz
+
+	return dx * dx + dy * dy + dz * dz <= MAX_DISTANCE_SQUARED
+end
+
 local function isPartInRange(part, playerPosition)
 	local partPosition = getPosition(part)
-	local distance = distanceBetween(playerPosition, partPosition)
+	local inRange = isWithinDistance(playerPosition, partPosition)
 
-	return distance ~= nil and distance <= MAX_DISTANCE
+	if inRange == nil then
+		if not warnedMissingDistance then
+			logWarning("[Null Highlighter] Could not read player/part distance, so boxes will stay visible instead of being hidden.")
+			warnedMissingDistance = true
+		end
+
+		return true
+	end
+
+	return inRange
 end
 
 function getChild(parent, childName)
@@ -232,6 +281,29 @@ local function getParts(instance)
 		return parts
 	end
 
+	return parts
+end
+
+local function addPartsFromInstance(parts, instance)
+	local instanceParts = getParts(instance)
+
+	for _, part in ipairs(instanceParts) do
+		table.insert(parts, part)
+	end
+end
+
+local function getTargetParts(target, instance)
+	local parts = {}
+
+	if target.includeChildren and instance.GetChildren ~= nil then
+		for _, child in ipairs(instance:GetChildren()) do
+			addPartsFromInstance(parts, child)
+		end
+
+		return parts
+	end
+
+	addPartsFromInstance(parts, instance)
 	return parts
 end
 
@@ -685,7 +757,7 @@ local function rescanTargets(boxMode)
 		local parts = {}
 
 		if instance ~= nil then
-			parts = getParts(instance)
+			parts = getTargetParts(target, instance)
 		end
 
 		if not sameParts(activeTarget.parts, parts) then
