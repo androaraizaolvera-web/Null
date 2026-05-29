@@ -1,14 +1,68 @@
-# A fast, small, safe, gradually typed embeddable scripting language derived from Lua
-#
-# https://github.com/luau-lang/luau
-# https://luau.org/
+			return nil, {
+				missingName = childName,
+				missingAt = buildPathText(pathParts, index - 1),
+				fullPath = buildPathText(pathParts),
+			}
+		end
 
-# Code coverage
-coverage.out
+		current = child
+	end
 
-# Profiling
-profile.out
-profile.svg
+	return current, nil
+end
 
-# Time trace
-trace.json
+local function getVisibleAdornee(instance)
+	if instance:IsA("BasePart") or instance:IsA("Model") then
+		return instance
+	end
+
+	local model = instance:FindFirstAncestorWhichIsA("Model")
+	if model then
+		return model
+	end
+
+	local part = instance:FindFirstAncestorWhichIsA("BasePart")
+	if part then
+		return part
+	end
+
+	return nil
+end
+
+local function createHighlight(targetConfig, instance)
+	local adornee = getVisibleAdornee(instance)
+
+	if not adornee then
+		warn(("[Null Highlighter] Found %s, but it has no visible part/model to highlight."):format(targetConfig.name))
+		return
+	end
+
+	local highlight = Instance.new("Highlight")
+	highlight.Name = targetConfig.name .. "_Highlight"
+	highlight.Adornee = adornee
+	highlight.FillColor = targetConfig.fillColor
+	highlight.FillTransparency = 0.45
+	highlight.OutlineColor = targetConfig.outlineColor
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Parent = getHighlightFolder()
+
+	print(("[Null Highlighter] Highlighting %s at %s"):format(targetConfig.name, instance:GetFullName()))
+end
+
+for _, targetConfig in ipairs(TARGETS) do
+	local instance, pathError = findPath(targetConfig.path)
+
+	if instance then
+		createHighlight(targetConfig, instance)
+	else
+		warn(
+			("[Null Highlighter] Could not find %s. Missing %q under %s. Full target: %s"):format(
+				targetConfig.name,
+				pathError.missingName,
+				pathError.missingAt,
+				pathError.fullPath
+			)
+		)
+	end
+end
